@@ -1,0 +1,283 @@
+{
+  "name": "Newsletter Digest.",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "getAll",
+        "limit": 20,
+        "simple": false,
+        "filters": {
+          "q": "label:Newsletters newer_than:1d"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -96,
+        0
+      ],
+      "id": "db2ed8a0-37ad-4e7a-b26d-605b3a46f89c",
+      "name": "Get many messages",
+      "webhookId": "1eccbf36-5edc-432c-950e-3f4d7c6491c1",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "elpRVMCFCujg3DMx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cleans each newsletter email into plain text for Gemini\n\nconst results = [];\n\nfor (const item of $input.all()) {\n  const email = item.json;\n\n  // 1. Who sent it (just the name, e.g. \"TLDR AI\")\n  let from = '';\n  if (email.from && typeof email.from === 'object') {\n    from = (email.from.value && email.from.value[0] && email.from.value[0].name) || email.from.text || '';\n  } else {\n    from = email.from || '';\n  }\n\n  // 2. Turn the HTML into readable text\n  const html = email.html || email.textAsHtml || '';\n  let content = '';\n\n  if (html) {\n    content = html\n      // remove hidden parts: page head, styles, scripts\n      .replace(/<(head|style|script)[\\s\\S]*?<\\/\\1>/gi, ' ')\n      // keep useful links as \"link text (url)\", drop junk links\n      .replace(/<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi, (match, url, inner) => {\n        const text = inner.replace(/<[^>]+>/g, '').trim();\n        const junk = /unsubscribe|preferences|view (it )?in (your )?browser|privacy|terms|advertise|mailto:/i;\n        if (!text || junk.test(url) || junk.test(text) || !/^https?:/i.test(url)) return text;\n        return text + ' (' + url + ')';\n      })\n      // line breaks where paragraphs and rows end\n      .replace(/<br\\s*\\/?>/gi, '\\n')\n      .replace(/<\\/(p|div|tr|li|h[1-6])>/gi, '\\n')\n      // remove all remaining tags\n      .replace(/<[^>]+>/g, ' ');\n  } else {\n    content = email.text || '';\n  }\n\n  // 3. Fix special characters and tidy up spacing\n  content = content\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;|&apos;/g, \"'\")\n    .replace(/&#(\\d+);/g, (m, n) => String.fromCharCode(Number(n)))\n    .replace(/&[a-z]+;/gi, ' ')\n    .replace(/[\\u200B-\\u200D\\uFEFF\\u034F\\u00AD]/g, '')\n    .replace(/[ \\t]+/g, ' ')\n    .replace(/\\n\\s*\\n+/g, '\\n\\n')\n    .trim();\n\n  // 4. Keep it a sensible length for Gemini\n  if (content.length > 12000) {\n    content = content.slice(0, 12000) + '\\n[...cut for length]';\n  }\n\n  results.push({\n    json: {\n      subject: email.subject || '(no subject)',\n      from: from,\n      date: email.date || '',\n      content: content,\n    },\n  });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        0
+      ],
+      "id": "a893f9c9-961d-48e8-82ac-3fea816b9e02",
+      "name": "Clean emails"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        424,
+        232
+      ],
+      "id": "15646cf3-fee8-4a62-957f-dda262d2e394",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "EDl0ukqrzAyKA5U4",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are reading one email newsletter. Pull out the main stories so a busy person can skim them.\n\nNewsletter: {{ $json.from }}\nSubject: {{ $json.subject }}\n\n--- NEWSLETTER START ---\n{{ $json.content }}\n--- NEWSLETTER END ---\n\nRules:\n- Skip ads, sponsored sections, promotions, job listings, event invites, and footer text.\n- Maximum 8 stories. Pick the most important ones.\n- Only use links that appear in the newsletter text. Never make up a link. If a story has no link, write \"Link: none\".\n- Write in plain, simple English.\n\nReply in exactly this format:\n\nSource: {{ $json.from }}\n\n- Headline: one or two sentences on what happened and why it matters.\n  Link: https://...\n\n- Headline: one or two sentences on what happened and why it matters.\n  Link: https://...\n\nIf there are no real stories (only ads or account notices), reply with exactly: NO STORIES",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        352,
+        0
+      ],
+      "id": "20a0ba3e-14c4-4316-b27b-ff5700c67d29",
+      "name": "Summarize each newsletter"
+    },
+    {
+      "parameters": {
+        "fieldsToAggregate": {
+          "fieldToAggregate": [
+            {
+              "fieldToAggregate": "text"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        704,
+        0
+      ],
+      "id": "8a8ced41-5890-4ac2-92d7-b4792461c038",
+      "name": "Combine summaries"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        232
+      ],
+      "id": "3791a3ac-8689-40d6-8da8-95fcb2fd009f",
+      "name": "Google Gemini Chat Model1",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "EDl0ukqrzAyKA5U4",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are writing a daily email digest for a busy small-business owner. Below are summaries of today's newsletters.\n\nToday's date: {{ $now.toFormat('cccc, d LLLL yyyy') }}\n\n--- SUMMARIES START ---\n{{ $json.text.filter(t => !t.includes('NO STORIES')).join('\\n\\n=====\\n\\n') }}\n--- SUMMARIES END ---\n\nYour job:\n1. Write a short overview (3 to 4 sentences) of the most important things today.\n2. If two or more newsletters cover the same story, merge them into ONE story.\n3. Group the stories under 2 to 5 clear topic headings (for example: AI Tools, Business, Product Updates). Put the most important topic first.\n4. For each story: a bold headline, 1 to 2 sentences in plain English, and a \"Read more\" link.\n5. Use the links exactly as given. Never make up or change a link. If a story says \"Link: none\", leave out the Read more link.\n6. Mention which newsletter each story came from, in small grey text.\n\nWrite the email in simple HTML using only these tags: h1, h2, p, strong, a, br, hr, div, span. Use inline styles only: font-family Arial, max width 640px, dark grey text, blue links, light grey box behind the overview.\n\nStart with an h1 that says: Your Newsletter Digest\nUnder it, a small grey line with today's date.\n\nReply with ONLY the HTML. No explanations. Do not wrap it in ``` code blocks.",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        928,
+        0
+      ],
+      "id": "51d8fd84-c5a1-4fdd-8928-19b72c91265b",
+      "name": "Write digest"
+    },
+    {
+      "parameters": {
+        "sendTo": "your-email@example.com",
+        "subject": "=Your Newsletter Digest – {{ $now.toFormat('d LLL yyyy') }}",
+        "message": "={{ $json.text.replace(/```html|```/g, '').trim() }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "Newsletter Digest"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1280,
+        0
+      ],
+      "id": "b51f1a24-7223-4510-b6b1-dd36ff8f52ff",
+      "name": "Send digest",
+      "webhookId": "71db930f-a9c9-4db0-b5d6-931e3fdf155e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "elpRVMCFCujg3DMx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -320,
+        0
+      ],
+      "id": "3960cb45-fdd2-4490-bf19-c2c61695ecdb",
+      "name": "Schedule Trigger"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get many messages": {
+      "main": [
+        [
+          {
+            "node": "Clean emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean emails": {
+      "main": [
+        [
+          {
+            "node": "Summarize each newsletter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarize each newsletter",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize each newsletter": {
+      "main": [
+        [
+          {
+            "node": "Combine summaries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine summaries": {
+      "main": [
+        [
+          {
+            "node": "Write digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Write digest",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write digest": {
+      "main": [
+        [
+          {
+            "node": "Send digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get many messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "cc51361d-0d50-4c99-9cfa-35f6d1841349",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f54fef2700797860ab5eab5b6c30638f641027f0bc34544f37b1b7955733358d"
+  },
+  "nodeGroups": [],
+  "id": "yhsaToW2HbSk2mes",
+  "tags": []
+}
